@@ -11,7 +11,7 @@ VIEW_TYPES = ["전체보기", "가격비교", "자주구매"]
 
 st.set_page_config(page_title="가을 가전 관리자", layout="wide")
 
-# --- 한 줄 유지 & 링크 강조 CSS ---
+# --- CSS 디자인 ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
@@ -54,24 +54,35 @@ st.markdown("""
     .down { background: #DBEAFE; color: #1D4ED8; }
     .none { background: #F1F5F9; color: #94A3B8; }
 
-    /* 링크 버튼 스타일 강화 */
+    /* 링크 버튼 스타일 */
     .link-btn {
         text-decoration: none;
         background: #F1F5F9;
         color: #2563EB;
-        padding: 5px 8px;
+        padding: 5px 12px;
         border-radius: 5px;
         font-size: 16px;
         border: 1px solid #CBD5E1;
         transition: all 0.2s;
+        font-weight: bold;
     }
     .link-btn:hover { background: #2563EB; color: white; border-color: #2563EB; }
     </style>
     """, unsafe_allow_html=True)
 
+# --- 링크 보정 함수 (핵심!) ---
+def fix_url(url):
+    url = str(url).strip()
+    if not url: return ""
+    # 주소가 compuzone.co.kr로 시작하면 앞에 https://를 강제로 붙여줌
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+    return url
+
 def get_live_price(url):
+    url = fix_url(url)
     try:
-        res = requests.get(url.strip(), headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         p_tag = soup.select_one("#product_content_2_price")
         return int(''.join(filter(str.isdigit, p_tag.get_text()))) if p_tag else None
@@ -81,7 +92,8 @@ def load_data():
     if os.path.exists(DB_FILE):
         df = pd.read_excel(DB_FILE)
         df.rename(columns={"우리판매가": "가을판매가", "컴퓨존등록가": "컴퓨존판매가"}, inplace=True)
-        for c in ["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"]:
+        cols = ["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"]
+        for c in cols:
             if c not in df.columns: df[c] = 0 if "가" in c else "-"
         return df
     return pd.DataFrame(columns=["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"])
@@ -97,19 +109,21 @@ with st.expander("➕ 신규 상품 등록", expanded=False):
     r_cat = c2.selectbox("카테고리", CATEGORY_LIST)
     r_name = c3.text_input("상품명")
     c4, c5, c6, c7 = st.columns([2, 1, 1, 1])
-    r_link = c4.text_input("컴퓨존 URL")
+    r_link = c4.text_input("컴퓨존 URL (주소 복사해서 넣어주세요)")
     r_my = c5.number_input("가을판매가", min_value=0, step=1000)
     r_cp = c6.number_input("컴퓨존판매가", min_value=0, step=1000)
     r_memo = c7.text_input("비고")
     if st.button("저장하기", use_container_width=True):
         if r_name and r_link:
-            new_row = {"구분": r_type, "카테고리": r_cat, "상품명": r_name, "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": r_cp, "메모": r_memo, "링크": r_link.strip()}
+            # 저장할 때 미리 주소 보정
+            new_url = fix_url(r_link)
+            new_row = {"구분": r_type, "카테고리": r_cat, "상품명": r_name, "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": r_cp, "메모": r_memo, "링크": new_url}
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
             st.session_state.df.to_excel(DB_FILE, index=False)
             st.rerun()
 
 # 2. 검색 & 탭
-search_term = st.text_input("🔍 상품명 또는 메모 검색", placeholder="검색어를 입력하세요...")
+search_term = st.text_input("🔍 상품명 또는 메모 검색")
 tabs = st.tabs(["전체보기", "가격비교", "자주구매"])
 selected_mode = "전체보기" if tabs[0] else "가격비교" if tabs[1] else "자주구매"
 
@@ -134,8 +148,8 @@ for idx, row in disp_df.iterrows():
         st_class = "up" if diff > 0 else "down" if diff < 0 else "none"
         diff_txt = f"▲{diff:,}" if diff > 0 else f"▼{abs(diff):,}" if diff < 0 else "-"
         
-        # 링크 주소 정제 (보안 및 공백 해결)
-        clean_url = str(row['링크']).strip()
+        # 링크 버튼 생성 (fix_url로 다시 한번 안전하게 보호)
+        target_url = fix_url(row['링크'])
 
         st.markdown(f"""
         <div class="product-row">
@@ -149,8 +163,8 @@ for idx, row in disp_df.iterrows():
                 <div class="price-box"><div class="price-val">{int(row['컴퓨존판매가']):,}</div></div>
                 <div class="price-box"><div class="price-val">{int(row['실시간가']):,}</div></div>
                 <div class="price-box"><div class="diff-badge {st_class}">{diff_txt}</div></div>
-                <div style="width:40px; text-align:right;">
-                    <a href="{clean_url}" target="_blank" class="link-btn" title="컴퓨존으로 이동">🔗</a>
+                <div style="width:50px; text-align:right;">
+                    <a href="{target_url}" target="_blank" class="link-btn">열기</a>
                 </div>
             </div>
         </div>
