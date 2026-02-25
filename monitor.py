@@ -16,11 +16,9 @@ st.set_page_config(page_title="가을 가전 관리자", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
-    
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; background-color: #F9FAFB; }
     
-    .main-title { font-size: 28px; font-weight: 600; color: #111827; margin-bottom: 5px; }
-    .sub-title { font-size: 14px; color: #6B7280; margin-bottom: 30px; }
+    .main-title { font-size: 26px; font-weight: 600; color: #111827; margin-bottom: 20px; }
     
     /* 카드 디자인 */
     .product-card {
@@ -28,26 +26,24 @@ st.markdown("""
         padding: 20px;
         border-radius: 12px;
         border: 1px solid #E5E7EB;
-        margin-bottom: 12px;
-        transition: all 0.2s;
+        margin-bottom: 15px;
     }
-    .product-card:hover { border-color: #3B82F6; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
     
-    /* 가격 태그 */
-    .price-label { font-size: 12px; color: #6B7280; margin-bottom: 4px; }
-    .price-value { font-size: 16px; font-weight: 600; color: #111827; }
+    /* 한 줄 레이아웃 (상품명 + 가격) */
+    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .product-title { font-size: 17px; font-weight: 600; color: #111827; }
+    .main-price { font-size: 18px; font-weight: 700; color: #3B82F6; }
     
-    /* 변동폭 디자인 */
-    .status-up { color: #EF4444; background: #FEE2E2; padding: 2px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; }
-    .status-down { color: #3B82F6; background: #DBEAFE; padding: 2px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; }
-    .status-none { color: #9CA3AF; font-size: 13px; }
+    /* 상세 정보 열 */
+    .detail-row { display: flex; gap: 30px; border-top: 1px solid #F3F4F6; padding-top: 12px; }
+    .detail-item { font-size: 13px; color: #6B7280; }
+    .detail-value { font-size: 14px; font-weight: 600; color: #374151; margin-top: 2px; }
+
+    /* 변동폭 배지 */
+    .status-up { color: #EF4444; background: #FEE2E2; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .status-down { color: #3B82F6; background: #DBEAFE; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
     
-    /* 버튼 커스텀 */
-    .stButton>button { border-radius: 8px; border: 1px solid #E5E7EB; background: white; color: #374151; font-weight: 500; }
-    .stButton>button:hover { border-color: #3B82F6; color: #3B82F6; background: #F0F7FF; }
-    
-    /* 입력창 디자인 */
-    div[data-testid="stExpander"] { background: white; border: 1px solid #E5E7EB; border-radius: 12px; }
+    .stButton>button { border-radius: 6px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -60,104 +56,92 @@ def get_live_price(product_url):
             soup = BeautifulSoup(res.text, "html.parser")
             price_tag = soup.select_one("#product_content_2_price")
             if price_tag: return int(''.join(filter(str.isdigit, price_tag.get_text())))
-        return None
-    except: return None
+    except: pass
+    return None
 
 def load_data():
     if os.path.exists(DB_FILE):
         df = pd.read_excel(DB_FILE)
-        # 컬럼명 보정 (기존 데이터 호환)
-        mapping = {"우리판매가": "가을판매가", "컴퓨존등록가": "컴퓨존판매가"}
-        df.rename(columns=mapping, inplace=True)
-        for col in ["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"]:
-            if col not in df.columns: df[col] = 0 if "가" in col else "-"
+        # 컬럼명 자동 매핑
+        df.rename(columns={"우리판매가": "가을판매가", "컴퓨존등록가": "컴퓨존판매가"}, inplace=True)
+        cols = ["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"]
+        for c in cols:
+            if c not in df.columns: df[c] = 0 if "가" in c else "-"
         return df
     return pd.DataFrame(columns=["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"])
 
 def save_data(df): df.to_excel(DB_FILE, index=False)
 
-# --- 메인 화면 ---
-st.markdown('<div class="main-title">가을 가전 가격 관리</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">실시간 컴퓨존 가격 추적 대시보드</div>', unsafe_allow_html=True)
+# --- 화면 구성 ---
+st.markdown('<div class="main-title">🍁 가을 가전 가격 대시보드</div>', unsafe_allow_html=True)
 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# 1. 상단 등록 바
-with st.expander("📦 신규 상품 등록", expanded=False):
+# 1. 신규 등록
+with st.expander("➕ 상품 신규 등록", expanded=False):
     c1, c2, c3 = st.columns([1, 1, 2])
-    reg_type = c1.selectbox("구분", VIEW_TYPES)
-    reg_cat = c2.selectbox("카테고리", CATEGORY_LIST)
-    reg_name = c3.text_input("상품명")
+    r_type = c1.selectbox("구분", VIEW_TYPES)
+    r_cat = c2.selectbox("카테고리", CATEGORY_LIST)
+    r_name = c3.text_input("상품명")
+    
     c4, c5, c6, c7 = st.columns([2, 1, 1, 1])
-    reg_link = c4.text_input("URL")
-    reg_my = c5.number_input("가을판매가", step=1000)
-    reg_comp = c6.number_input("컴퓨존판매가", step=1000)
-    reg_memo = c7.text_input("비고")
-    if st.button("목록에 추가하기"):
-        if reg_name and reg_link:
-            new_row = {"구분": reg_type, "카테고리": reg_cat, "상품명": reg_name, "가을판매가": reg_my, "컴퓨존판매가": reg_comp, "실시간가": reg_comp, "메모": reg_memo, "링크": reg_link}
+    r_link = c4.text_input("컴퓨존 URL")
+    r_my = c5.number_input("가을판매가", min_value=0, step=1000)
+    r_cp = c6.number_input("컴퓨존판매가", min_value=0, step=1000)
+    r_memo = c7.text_input("메모")
+    
+    if st.button("목록에 추가하기", use_container_width=True):
+        if r_name and r_link:
+            new_row = {"구분": r_type, "카테고리": r_cat, "상품명": r_name, "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": r_cp, "메모": r_memo, "링크": r_link}
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
             save_data(st.session_state.df)
             st.rerun()
 
-# 2. 필터 섹션
+# 2. 필터 및 업데이트
 st.write("")
-col_nav1, col_nav2 = st.columns([7, 3])
-with col_nav1:
-    selected_mode = st.radio("보기 모드", VIEW_TYPES, horizontal=True, label_visibility="collapsed")
-
-with col_nav2:
-    if st.button("🔄 실시간 가격 일괄 업데이트"):
-        with st.spinner("가격을 업데이트 중..."):
-            temp_df = st.session_state.df[st.session_state.df['구분'] == selected_mode]
-            for i in temp_df.index:
+nav1, nav2 = st.columns([7, 3])
+with nav1:
+    sel_mode = st.radio("보기 모드", VIEW_TYPES, horizontal=True, label_visibility="collapsed")
+with nav2:
+    if st.button("🔄 전체 가격 업데이트", use_container_width=True):
+        with st.spinner("갱신 중..."):
+            for i in st.session_state.df[st.session_state.df['구분'] == sel_mode].index:
                 p = get_live_price(st.session_state.df.at[i, '링크'])
                 if p: st.session_state.df.at[i, '실시간가'] = p
             save_data(st.session_state.df)
             st.rerun()
 
-# 3. 리스트 출력 (카드 스타일)
-display_df = st.session_state.df[st.session_state.df['구분'] == selected_mode]
+# 3. 상품 리스트
+disp_df = st.session_state.df[st.session_state.df['구분'] == sel_mode]
 
-if display_df.empty:
-    st.info("해당 구분에 등록된 상품이 없습니다.")
-else:
-    for idx, row in display_df.iterrows():
-        st.markdown(f"""
-        <div class="product-card">
-            <div style="display: flex; justify-content: space-between; align-items: start;">
-                <div style="flex: 1;">
-                    <span style="font-size: 11px; color: #3B82F6; font-weight: 600; text-transform: uppercase;">{row['카테고리']}</span>
-                    <div style="font-size: 16px; font-weight: 600; color: #111827; margin-top: 4px;">{row['상품명']}</div>
-                    <div style="font-size: 13px; color: #6B7280; margin-top: 4px;">{row['메모']}</div>
-                </div>
-                <div style="text-align: right; min-width: 120px;">
-                    <a href="{row['링크']}" target="_blank" style="text-decoration: none; font-size: 13px; color: #3B82F6;">컴퓨존 바로가기 ↗</a>
-                </div>
+for idx, row in disp_df.iterrows():
+    st.markdown(f"""
+    <div class="product-card">
+        <div class="top-row">
+            <div>
+                <span style="font-size:12px; color:#3B82F6;">{row['카테고리']}</span>
+                <div class="product-title">{row['상품명']}</div>
             </div>
-            <div style="display: flex; margin-top: 20px; gap: 40px; border-top: 1px solid #F3F4F6; padding-top: 15px;">
-                <div>
-                    <div class="price-label">가을판매가</div>
-                    <div class="price-value">{int(row['가을판매가']):,}원</div>
-                </div>
-                <div>
-                    <div class="price-label">컴퓨존판매가 (기준)</div>
-                    <div class="price-value" style="color: #9CA3AF;">{int(row['컴퓨존판매가']):,}원</div>
-                </div>
-                <div>
-                    <div class="price-label">실시간 컴퓨존가</div>
-                    <div class="price-value">{int(row['실시간가']):,}원</div>
-                </div>
-                <div style="margin-left: auto; align-self: end;">
-                    {"<span class='status-up'>▲ "+format(int(row['실시간가'])-int(row['컴퓨존판매가']), ',')+"</span>" if int(row['실시간가']) > int(row['컴퓨존판매가']) else 
-                      "<span class='status-down'>▼ "+format(abs(int(row['실시간가'])-int(row['컴퓨존판매가'])), ',')+"</span>" if int(row['실시간가']) < int(row['컴퓨존판매가']) else 
-                      "<span class='status-none'>변동없음</span>"}
-                </div>
+            <div style="text-align: right;">
+                <div style="font-size:12px; color:#6B7280;">가을판매가</div>
+                <div class="main-price">{int(row['가을판매가']):,}원</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-        if st.button("상품 삭제", key=f"del_{idx}"):
-            st.session_state.df = st.session_state.df.drop(idx).reset_index(drop=True)
-            save_data(st.session_state.df)
-            st.rerun()
+        <div class="detail-row">
+            <div class="detail-item">컴퓨존판매가(기준)<div class="detail-value">{int(row['컴퓨존판매가']):,}원</div></div>
+            <div class="detail-item">실시간 컴퓨존가<div class="detail-value">{int(row['실시간가']):,}원</div></div>
+            <div class="detail-item">비고<div class="detail-value">{row['메모']}</div></div>
+            <div style="margin-left:auto;">
+                {"<span class='status-up'>▲ "+format(int(row['실시간가'])-int(row['컴퓨존판매가']), ',')+"</span>" if int(row['실시간가']) > int(row['컴퓨존판매가']) else 
+                  "<span class='status-down'>▼ "+format(abs(int(row['실시간가'])-int(row['컴퓨존판매가'])), ',')+"</span>" if int(row['실시간가']) < int(row['컴퓨존판매가']) else 
+                  "<span style='color:#9CA3AF; font-size:12px;'>변동없음</span>"}
+            </div>
+            <div style="padding-top:5px;"><a href="{row['링크']}" target="_blank" style="text-decoration:none; font-size:13px; color:#3B82F6;">🔗 링크</a></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    if st.button(f"상품 삭제", key=f"del_{idx}"):
+        st.session_state.df = st.session_state.df.drop(idx).reset_index(drop=True)
+        save_data(st.session_state.df)
+        st.rerun()
