@@ -47,14 +47,19 @@ def _parse_price_from_soup(soup) -> int | None:
             if price:
                 return price
 
-    # CSS 선택자
+    # CSS 선택자 (컴퓨존 포함 다수 쇼핑몰)
     for selector in [
-        "#product_content_2_price",
+        "#product_content_2_price",           # 컴퓨존 메인
+        "#prd_sale_price", "#prd_price",      # 컴퓨존 추가
         "#sell_price", "#sale_price", "#final_price",
+        "#salePrice", "#realPrice", "#dispPrice",
         ".sell_price", ".sale_price", ".final_price",
         ".selling_price", ".goods_price", ".product_price",
+        ".salePrice", ".sale-price", ".real-price",
         "span.price", "strong.price", ".price_num",
         "#priceStd", ".priceStd",
+        ".item_price strong", ".price_wrap strong",
+        "em.price", "b.price",
     ]:
         el = soup.select_one(selector)
         if el:
@@ -102,14 +107,19 @@ def _fetch_with_requests(url: str) -> int | None:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Accept-Language": "ko-KR,ko;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
             "Referer": "https://www.compuzone.co.kr/",
         }
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=12)
         resp.raise_for_status()
-        resp.encoding = resp.apparent_encoding
+        # 한국어 쇼핑몰은 EUC-KR 또는 UTF-8
+        if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
+            resp.encoding = resp.apparent_encoding
         return _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
     except Exception:
         return None
@@ -165,9 +175,9 @@ def fetch_compuzone_price(url: str) -> int | None:
     if not driver:
         return None
     try:
-        driver.set_page_load_timeout(15)
+        driver.set_page_load_timeout(12)
         driver.get(url)
-        time.sleep(2)
+        time.sleep(1)
         return _parse_price_from_soup(BeautifulSoup(driver.page_source, "html.parser"))
     except Exception:
         return None
@@ -281,14 +291,14 @@ def price_html(row, show_fall: bool) -> str:
 
     if show_fall and fall_price > 0:
         parts.append(
-            f'<span style="color:#aaa;font-size:0.76em;">가을가</span>'
-            f'<span style="font-size:0.88em;margin-left:2px;">{fall_price:,}원</span>'
+            f'<span style="color:#888;font-size:0.88em;">가을가</span>'
+            f'<span style="font-size:1.0em;margin-left:3px;font-weight:500;">{fall_price:,}원</span>'
         )
 
     if base_price > 0:
         parts.append(
-            f'<span style="color:#aaa;font-size:0.76em;">기준가</span>'
-            f'<span style="font-size:0.88em;margin-left:2px;">{base_price:,}원</span>'
+            f'<span style="color:#888;font-size:0.88em;">기준가</span>'
+            f'<span style="font-size:1.0em;margin-left:3px;font-weight:500;">{base_price:,}원</span>'
         )
 
     if live_price == 0:
@@ -298,16 +308,16 @@ def price_html(row, show_fall: bool) -> str:
         if base_price > 0:
             diff = live_price - base_price
             if diff > 0:
-                delta = f'<span style="color:#e74c3c;font-weight:600;font-size:0.88em;margin-left:3px;">▲ {diff:,}원</span>'
+                delta = f'<span style="color:#e74c3c;font-weight:700;font-size:1.05em;margin-left:4px;">▲ {diff:,}원</span>'
             elif diff < 0:
-                delta = f'<span style="color:#27ae60;font-weight:600;font-size:0.88em;margin-left:3px;">▼ {abs(diff):,}원</span>'
+                delta = f'<span style="color:#27ae60;font-weight:700;font-size:1.05em;margin-left:4px;">▼ {abs(diff):,}원</span>'
             else:
-                delta = '<span style="color:#ccc;font-size:0.88em;margin-left:3px;">─</span>'
+                delta = '<span style="color:#999;font-size:1.0em;margin-left:4px;">─ 동일</span>'
         else:
             delta = ''
         parts.append(
-            f'<span style="color:#aaa;font-size:0.76em;">실시간</span>'
-            f'<b style="font-size:0.88em;margin-left:2px;">{live_price:,}원</b>'
+            f'<span style="color:#888;font-size:0.88em;">실시간</span>'
+            f'<b style="font-size:1.0em;margin-left:3px;">{live_price:,}원</b>'
             f'{delta}'
         )
 
@@ -370,11 +380,15 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
 
                 with c_btns:
                     link = str(row["링크"]).strip()
-                    bc1, bc2 = st.columns([1, 1])
+                    bc1, bc2, bc3 = st.columns([1, 1, 1])
                     if link.startswith("http"):
                         bc1.link_button("🔗", link, use_container_width=True)
                     if bc2.button("✏️", key=f"edit_{current_tab}_{idx}", use_container_width=True):
                         st.session_state.editing_key = (current_tab, idx)
+                        st.rerun()
+                    if bc3.button("🗑️", key=f"qdel_{current_tab}_{idx}", use_container_width=True):
+                        st.session_state.df = st.session_state.df.drop(idx).reset_index(drop=True)
+                        st.session_state.df.to_excel(DB_FILE, index=False)
                         st.rerun()
 
             else:
@@ -461,9 +475,9 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
                 # 1차: Selenium (JS 렌더링)
                 if selenium_ok:
                     try:
-                        driver.set_page_load_timeout(15)
+                        driver.set_page_load_timeout(12)
                         driver.get(link)
-                        time.sleep(2)
+                        time.sleep(1)
                         price = _parse_price_from_soup(
                             BeautifulSoup(driver.page_source, "html.parser")
                         )
@@ -493,14 +507,18 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
 
         st.session_state.df.to_excel(DB_FILE, index=False)
 
+        mode_note = "" if selenium_ok else " · Chrome 없음(requests 전용)"
         if updated:
             st.success(
                 f"✅ {updated}개 갱신 완료"
                 + (f" / {failed}개 조회 실패" if failed else "")
-                + ("" if selenium_ok else " (Chrome 미설치 — requests 모드)")
+                + mode_note
             )
         else:
-            st.warning(f"⚠️ 전체 조회 실패 ({failed}개) — URL을 확인해 주세요.")
+            st.warning(
+                f"⚠️ 전체 조회 실패 ({failed}개){mode_note}\n\n"
+                "URL이 올바른지 확인하거나, 해당 쇼핑몰이 크롤링을 차단 중일 수 있습니다."
+            )
         st.rerun()
 
 
