@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 DB_FILE = "product_db.xlsx"
 CATEGORY_LIST = ["전체보기", "PC", "워크스테이션", "SSD", "HDD", "RAM", "VGA"]
 
-st.set_page_config(page_title="컴퓨존 비교표 및 구매링크", layout="wide")
-st.title("🍁 컴퓨존 비교표 및 구매링크")
+st.set_page_config(page_title="컴퓨존 가격모니터", layout="wide")
+st.caption("🍁 컴퓨존 가격모니터")
 
 
 # --- [유틸] ---
@@ -208,10 +208,16 @@ if "df" not in st.session_state:
     st.session_state.df = load_data()
 if "editing_key" not in st.session_state:
     st.session_state.editing_key = None  # (current_tab, idx)
+if "show_add_form" not in st.session_state:
+    st.session_state.show_add_form = False
 
 
 # --- [신규 상품 등록] ---
-with st.expander("➕ 신규 상품 등록"):
+if st.button("➕ 신규 상품 등록"):
+    st.session_state.show_add_form = not st.session_state.show_add_form
+    st.rerun()
+
+if st.session_state.show_add_form:
     c1, c2, c3 = st.columns([1, 1, 2])
     r_type = c1.selectbox("구분", ["가격비교", "자주구매"])
     r_cat  = c2.selectbox("카테고리", CATEGORY_LIST[1:])
@@ -227,7 +233,7 @@ with st.expander("➕ 신규 상품 등록"):
             with st.spinner("실시간 가격 조회 중..."):
                 live_price = fetch_compuzone_price(r_link)
             if live_price is None:
-                live_price = r_cp
+                live_price = 0  # 조회 실패 시 0으로 저장 → "실시간 미조회" 표시
             new_row = {
                 "구분": r_type, "카테고리": r_cat, "상품명": r_name,
                 "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": live_price,
@@ -237,6 +243,7 @@ with st.expander("➕ 신규 상품 등록"):
                 [st.session_state.df, pd.DataFrame([new_row])], ignore_index=True
             )
             st.session_state.df.to_excel(DB_FILE, index=False)
+            st.session_state.show_add_form = False
             st.rerun()
 
 
@@ -265,39 +272,47 @@ def price_html(row, show_fall: bool) -> str:
     fall_price = safe_int(row["가을판매가"])
     base_price = safe_int(row["컴퓨존판매가"])
     live_price = safe_int(row["실시간가"])
-    diff = live_price - base_price
+
+    sep = '<span style="color:#ddd;margin:0 3px;">·</span>'
+    parts = []
+
+    if show_fall and fall_price > 0:
+        parts.append(
+            f'<span style="color:#aaa;font-size:0.76em;">가을가</span>'
+            f'<span style="font-size:0.88em;margin-left:2px;">{fall_price:,}원</span>'
+        )
+
+    if base_price > 0:
+        parts.append(
+            f'<span style="color:#aaa;font-size:0.76em;">기준가</span>'
+            f'<span style="font-size:0.88em;margin-left:2px;">{base_price:,}원</span>'
+        )
 
     if live_price == 0:
-        live_txt = '<span style="color:#aaa;font-size:0.85em;">미조회</span>'
-        diff_txt = ""
+        parts.append('<span style="color:#aaa;font-size:0.85em;">실시간 미조회</span>')
     else:
-        live_txt = f'<b style="font-size:1.05em;">{live_price:,}원</b>'
-        if diff > 0:
-            diff_txt = f'&nbsp;<span style="color:#e74c3c;font-size:0.85em;">▲ {diff:,}원</span>'
-        elif diff < 0:
-            diff_txt = f'&nbsp;<span style="color:#27ae60;font-size:0.85em;">▼ {abs(diff):,}원</span>'
+        # 기준가가 있을 때만 델타 표시
+        if base_price > 0:
+            diff = live_price - base_price
+            if diff > 0:
+                delta = f'<span style="color:#e74c3c;font-weight:600;font-size:0.88em;margin-left:3px;">▲ {diff:,}원</span>'
+            elif diff < 0:
+                delta = f'<span style="color:#27ae60;font-weight:600;font-size:0.88em;margin-left:3px;">▼ {abs(diff):,}원</span>'
+            else:
+                delta = '<span style="color:#ccc;font-size:0.88em;margin-left:3px;">─</span>'
         else:
-            diff_txt = '&nbsp;<span style="color:#aaa;font-size:0.85em;">─</span>'
-
-    row1_parts = []
-    if show_fall and fall_price > 0:
-        row1_parts.append(
-            f'<span style="color:#aaa;font-size:0.78em;">가을가</span>'
-            f' <span style="font-size:0.88em;">{fall_price:,}원</span>'
-        )
-    if base_price > 0:
-        row1_parts.append(
-            f'<span style="color:#aaa;font-size:0.78em;">기준가</span>'
-            f' <span style="font-size:0.88em;">{base_price:,}원</span>'
+            delta = ''
+        parts.append(
+            f'<span style="color:#aaa;font-size:0.76em;">실시간</span>'
+            f'<b style="font-size:0.95em;margin-left:2px;">{live_price:,}원</b>'
+            f'{delta}'
         )
 
-    lines = []
-    if row1_parts:
-        lines.append(" &nbsp;·&nbsp; ".join(row1_parts))
-    lines.append(
-        f'<span style="color:#aaa;font-size:0.78em;">실시간</span> {live_txt}{diff_txt}'
+    return (
+        f'<div style="display:flex;align-items:center;gap:4px;flex-wrap:nowrap;overflow:hidden;">'
+        + sep.join(parts)
+        + '</div>'
     )
-    return "<br>".join(lines)
 
 
 # --- [리스트 렌더링] ---
@@ -319,35 +334,43 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
         with st.container(border=True):
             if not is_editing:
                 # ── 일반 표시
-                c_info, c_price, c_btns = st.columns([0.45, 0.42, 0.13])
+                c_info, c_price, c_btns = st.columns([0.40, 0.47, 0.13])
 
                 with c_info:
                     cat  = str(row["카테고리"]).strip()
                     name = str(row["상품명"]).strip()
                     memo = str(row["메모"]).strip()
-                    parts = []
+                    info_parts = []
                     if cat and cat not in ("nan", ""):
-                        parts.append(
-                            f'<span style="font-size:0.75em;color:#888;'
-                            f'background:#f0f0f0;padding:1px 6px;border-radius:3px;">{cat}</span>'
+                        info_parts.append(
+                            f'<span style="font-size:0.72em;color:#888;background:#f0f0f0;'
+                            f'padding:1px 5px;border-radius:3px;white-space:nowrap;">{cat}</span>'
                         )
-                    parts.append(f'<span style="font-size:0.95em;font-weight:600;">{name}</span>')
+                    info_parts.append(f'<span style="font-size:0.93em;font-weight:600;">{name}</span>')
                     if memo and memo not in ("nan", "-", "0", ""):
-                        parts.append(f'<span style="font-size:0.78em;color:#888;">📝 {memo}</span>')
-                    st.markdown("<br>".join(parts), unsafe_allow_html=True)
+                        info_parts.append(
+                            f'<span style="font-size:0.78em;color:#aaa;white-space:nowrap;">📝 {memo}</span>'
+                        )
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:8px;overflow:hidden;">'
+                        + " ".join(info_parts)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
 
                 with c_price:
                     show_fall = current_tab != "가격비교"
                     st.markdown(
-                        f'<div style="padding:4px 0;">{price_html(row, show_fall)}</div>',
+                        f'<div style="padding:2px 0;">{price_html(row, show_fall)}</div>',
                         unsafe_allow_html=True,
                     )
 
                 with c_btns:
                     link = str(row["링크"]).strip()
+                    bc1, bc2 = st.columns([1, 1])
                     if link.startswith("http"):
-                        st.link_button("🔗 열기", link, use_container_width=True)
-                    if st.button("✏️ 수정", key=f"edit_{current_tab}_{idx}", use_container_width=True):
+                        bc1.link_button("🔗", link, use_container_width=True)
+                    if bc2.button("✏️", key=f"edit_{current_tab}_{idx}", use_container_width=True):
                         st.session_state.editing_key = (current_tab, idx)
                         st.rerun()
 
