@@ -51,7 +51,7 @@ def _parse_price_from_soup(soup) -> int | None:
     # 정가 레이블이 붙은 금액은 건너뜀
     SKIP_RE = re.compile(r'정가|권장소비자가|시중가|소비자가|원가')
     SALE_RE = re.compile(
-        r'(?:판매가|할인가|최종가|구매가|현재가|특가)[^\d]{0,6}([\d,]{4,})\s*원',
+        r'(?:판매가|할인가|최종가|구매가|현재가|특가).{0,200}?([\d,]{4,})\s*원',
         re.S,
     )
     text = soup.get_text(" ", strip=True)
@@ -335,7 +335,7 @@ with st.expander("🔧 URL 파싱 진단 (가격 조회 안 될 때)"):
 
                     # SALE_RE 매칭
                     SALE_PATTERN = re.compile(
-                        r'(?:판매가|할인가|최종가|구매가|현재가|특가)[^\d]{0,6}([\d,]{4,})\s*원', re.S
+                        r'(?:판매가|할인가|최종가|구매가|현재가|특가).{0,200}?([\d,]{4,})\s*원', re.S
                     )
                     sale_matches = []
                     for sm in SALE_PATTERN.finditer(text_full):
