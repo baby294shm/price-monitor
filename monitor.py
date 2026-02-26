@@ -67,6 +67,14 @@ def _parse_price_from_soup(soup) -> int | None:
             if price:
                 return price
 
+    # data-* 속성에서 가격 추출 (컴퓨존 등 일부 쇼핑몰)
+    for attr in ["data-price", "data-sale-price", "data-sell-price", "data-final-price"]:
+        el = soup.find(attrs={attr: True})
+        if el:
+            price = extract_first_price(el[attr])
+            if price:
+                return price
+
     # JSON-LD Schema.org
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -141,6 +149,11 @@ def _fetch_with_requests(url: str) -> int | None:
         # 한국어 쇼핑몰은 EUC-KR 또는 UTF-8
         if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
             resp.encoding = resp.apparent_encoding
+        price = _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
+        if price:
+            return price
+        # EUC-KR 인코딩 재시도 (컴퓨존 등 일부 한국 쇼핑몰)
+        resp.encoding = "euc-kr"
         return _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
     except Exception:
         return None
