@@ -13,7 +13,7 @@ DB_FILE = "product_db.xlsx"
 CATEGORY_LIST = ["전체보기", "PC", "워크스테이션", "SSD", "HDD", "RAM", "VGA"]
 
 st.set_page_config(page_title="컴퓨존 가격모니터", layout="wide")
-st.caption("🍁 컴퓨존 가격모니터")
+st.caption("컴퓨존 가격모니터")
 
 
 # --- [유틸] ---
