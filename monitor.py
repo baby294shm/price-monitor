@@ -122,7 +122,17 @@ def load_data() -> pd.DataFrame:
             for c in cols:
                 if c not in df.columns:
                     df[c] = "자주구매" if c == "구분" else 0
-            return df.fillna("")
+            df = df.fillna("")
+            # 비정상 가격(30,000,000원 초과) 자동 초기화
+            fixed = False
+            for price_col in ["가을판매가", "컴퓨존판매가", "실시간가"]:
+                mask = df[price_col].apply(lambda v: safe_int(v) > 30_000_000)
+                if mask.any():
+                    df.loc[mask, price_col] = 0
+                    fixed = True
+            if fixed:
+                df.to_excel(DB_FILE, index=False)
+            return df
         except Exception:
             pass
     return pd.DataFrame(columns=cols)
