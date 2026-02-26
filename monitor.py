@@ -22,6 +22,19 @@ def safe_int(val):
         return 0
 
 
+def extract_first_price(text: str) -> int | None:
+    """텍스트에서 첫 번째 유효한 가격 추출 (1,000 ~ 30,000,000원 범위)"""
+    matches = re.findall(r"[\d,]+", text)
+    for m in matches:
+        try:
+            num = int(m.replace(",", ""))
+            if 1_000 <= num <= 30_000_000:
+                return num
+        except Exception:
+            pass
+    return None
+
+
 # --- [실시간 가격 크롤링] ---
 def fetch_compuzone_price(url: str) -> int | None:
     """컴퓨존 상품 URL에서 판매가 크롤링. 실패 시 None 반환."""
@@ -42,7 +55,15 @@ def fetch_compuzone_price(url: str) -> int | None:
         resp.encoding = resp.apparent_encoding
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # 방법 1: CSS 선택자 (컴퓨존 전용 + 한국 쇼핑몰 공통)
+        # 방법 1: og: 메타태그 (빠르고 정확)
+        for prop in ["og:price:amount", "product:price:amount"]:
+            meta = soup.find("meta", property=prop)
+            if meta:
+                price = extract_first_price(meta.get("content", ""))
+                if price:
+                    return price
+
+        # 방법 2: CSS 선택자 (컴퓨존 전용 + 한국 쇼핑몰 공통)
         for selector in [
             "#product_content_2_price",
             "#sell_price", "#sale_price", "#final_price",
@@ -53,11 +74,11 @@ def fetch_compuzone_price(url: str) -> int | None:
         ]:
             el = soup.select_one(selector)
             if el:
-                num = re.sub(r"[^\d]", "", el.get_text())
-                if num and int(num) > 1000:
-                    return int(num)
+                price = extract_first_price(el.get_text())
+                if price:
+                    return price
 
-        # 방법 2: JSON-LD Schema.org
+        # 방법 3: JSON-LD Schema.org
         for script in soup.find_all("script", type="application/ld+json"):
             try:
                 data = json.loads(script.string or "")
@@ -66,25 +87,26 @@ def fetch_compuzone_price(url: str) -> int | None:
                 offers = data.get("offers", data.get("Offers", {}))
                 if isinstance(offers, list):
                     offers = offers[0]
-                price = offers.get("price", offers.get("Price", ""))
-                if price:
-                    num = re.sub(r"[^\d]", "", str(price))
-                    if num and int(num) > 1000:
-                        return int(num)
+                raw = offers.get("price", offers.get("Price", ""))
+                if raw:
+                    price = extract_first_price(str(raw))
+                    if price:
+                        return price
             except Exception:
                 pass
 
-        # 방법 3: 텍스트 regex
+        # 방법 4: 텍스트 regex
         text = soup.get_text(" ", strip=True)
         for pattern in [
-            r'판매가[^\d]*?([\d,]+)\s*원',
-            r'할인가[^\d]*?([\d,]+)\s*원',
-            r'최종가[^\d]*?([\d,]+)\s*원',
+            r'판매가[^\d]*([\d,]+)\s*원',
+            r'할인가[^\d]*([\d,]+)\s*원',
+            r'최종가[^\d]*([\d,]+)\s*원',
         ]:
-            for m in re.findall(pattern, text):
-                num = int(m.replace(",", ""))
-                if num > 1000:
-                    return num
+            m = re.search(pattern, text)
+            if m:
+                price = extract_first_price(m.group(1))
+                if price:
+                    return price
 
         return None
     except Exception:
@@ -161,6 +183,41 @@ if search_q:
     ]
 
 
+# --- [가격 표시 HTML] ---
+def price_html(row, show_fall: bool) -> str:
+    fall_price = safe_int(row["가을판매가"])
+    base_price = safe_int(row["컴퓨존판매가"])
+    live_price = safe_int(row["실시간가"])
+    diff = live_price - base_price
+
+    if live_price == 0:
+        live_txt = '<span style="color:#aaa;font-size:0.85em;">미조회</span>'
+        diff_txt = ""
+    else:
+        live_txt = f'<b style="font-size:1.05em;">{live_price:,}원</b>'
+        if diff > 0:
+            diff_txt = f'&nbsp;<span style="color:#e74c3c;font-size:0.85em;">▲ {diff:,}원</span>'
+        elif diff < 0:
+            diff_txt = f'&nbsp;<span style="color:#27ae60;font-size:0.85em;">▼ {abs(diff):,}원</span>'
+        else:
+            diff_txt = '&nbsp;<span style="color:#aaa;font-size:0.85em;">─</span>'
+
+    lines = []
+    row1_parts = []
+    if show_fall and fall_price > 0:
+        row1_parts.append(f'<span style="color:#aaa;font-size:0.78em;">가을가</span> <span style="font-size:0.88em;">{fall_price:,}원</span>')
+    if base_price > 0:
+        row1_parts.append(f'<span style="color:#aaa;font-size:0.78em;">기준가</span> <span style="font-size:0.88em;">{base_price:,}원</span>')
+    if row1_parts:
+        lines.append(" &nbsp;·&nbsp; ".join(row1_parts))
+
+    lines.append(
+        f'<span style="color:#aaa;font-size:0.78em;">실시간</span> {live_txt}{diff_txt}'
+    )
+
+    return "<br>".join(lines)
+
+
 # --- [리스트 렌더링] ---
 def display_list(target_df: pd.DataFrame, current_tab: str):
     if target_df.empty:
@@ -176,7 +233,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
 
     for idx, row in target_df.iterrows():
         with st.container(border=True):
-            c_chk, c_info, c_price, c_btn = st.columns([0.05, 0.40, 0.45, 0.10])
+            c_chk, c_info, c_price, c_btn = st.columns([0.04, 0.42, 0.44, 0.10])
 
             # 체크박스
             with c_chk:
@@ -185,28 +242,26 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
 
             # 상품 정보
             with c_info:
-                st.caption(f"[{row['카테고리']}]")
-                st.markdown(f"**{row['상품명']}**")
+                cat = str(row["카테고리"]).strip()
+                name = str(row["상품명"]).strip()
                 memo = str(row["메모"]).strip()
+
+                info_parts = []
+                if cat and cat not in ("nan", ""):
+                    info_parts.append(f'<span style="font-size:0.75em;color:#888;background:#f0f0f0;padding:1px 6px;border-radius:3px;">{cat}</span>')
+                info_parts.append(f'<span style="font-size:0.95em;font-weight:600;">{name}</span>')
                 if memo and memo not in ("nan", "-", "0", ""):
-                    st.markdown(
-                        f"<small style='color:gray;'>📝 {memo}</small>",
-                        unsafe_allow_html=True,
-                    )
+                    info_parts.append(f'<span style="font-size:0.78em;color:#888;">📝 {memo}</span>')
 
-            # 가격
+                st.markdown("<br>".join(info_parts), unsafe_allow_html=True)
+
+            # 가격 (compact HTML)
             with c_price:
-                fall_price = safe_int(row["가을판매가"])
-                base_price = safe_int(row["컴퓨존판매가"])
-                live_price = safe_int(row["실시간가"])
-                diff       = live_price - base_price
-
-                p1, p2, p3, p4 = st.columns(4)
-                if current_tab != "가격비교":
-                    p1.metric("가을가", f"{fall_price:,}")
-                p2.metric("기준가", f"{base_price:,}")
-                p3.metric("실시간", f"{live_price:,}")
-                p4.metric("변동액", f"{diff:,}", delta=diff, delta_color="inverse")
+                show_fall = current_tab != "가격비교"
+                st.markdown(
+                    f'<div style="padding:4px 0;">{price_html(row, show_fall)}</div>',
+                    unsafe_allow_html=True,
+                )
 
             # 링크 버튼
             with c_btn:
@@ -220,16 +275,22 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
         progress_bar = st.progress(0, text="가격 조회 중...")
         total   = len(target_df)
         updated = 0
+        failed  = 0
         for i, (idx, row) in enumerate(target_df.iterrows()):
             link = str(row.get("링크", "")).strip()
-            if link:
+            if link and link.startswith("http"):
                 price = fetch_compuzone_price(link)
                 if price:
                     st.session_state.df.at[idx, "실시간가"] = price
                     updated += 1
+                else:
+                    failed += 1
             progress_bar.progress((i + 1) / total, text=f"조회 중... ({i+1}/{total})")
         st.session_state.df.to_excel(DB_FILE, index=False)
-        st.success(f"{updated} / {total} 가격 갱신 완료")
+        if updated:
+            st.success(f"✅ {updated}개 갱신 완료" + (f" / {failed}개 조회 실패" if failed else ""))
+        else:
+            st.warning(f"⚠️ 가격 조회 실패 ({failed}개) — URL을 확인해 주세요.")
         st.rerun()
 
     # ── 선택 삭제
