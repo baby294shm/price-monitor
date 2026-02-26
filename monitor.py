@@ -67,6 +67,14 @@ def _parse_price_from_soup(soup) -> int | None:
             if price:
                 return price
 
+    # data-* 속성에서 가격 추출 (컴퓨존 등 일부 쇼핑몰)
+    for attr in ["data-price", "data-sale-price", "data-sell-price", "data-final-price"]:
+        el = soup.find(attrs={attr: True})
+        if el:
+            price = extract_first_price(el[attr])
+            if price:
+                return price
+
     # JSON-LD Schema.org
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -84,12 +92,33 @@ def _parse_price_from_soup(soup) -> int | None:
         except Exception:
             pass
 
+    # JavaScript 변수에서 가격 추출 (인라인 스크립트)
+    for script in soup.find_all("script"):
+        js = script.string or ""
+        if not js.strip():
+            continue
+        for pattern in [
+            r'["\']?(?:sell_price|sale_price|final_price|real_price|'
+            r'selling_price|goods_price|product_price|salePrice|'
+            r'realPrice|dispPrice|prd_price)["\']?\s*[=:]\s*["\']?([\d,]+)',
+            r'"price"\s*:\s*"?([\d,]+)"?',
+            r"'price'\s*:\s*'?([\d,]+)'?",
+            r'var\s+price\s*=\s*([\d,]+)',
+        ]:
+            m = re.search(pattern, js, re.IGNORECASE)
+            if m:
+                price = extract_first_price(m.group(1))
+                if price:
+                    return price
+
     # 텍스트 regex
     text = soup.get_text(" ", strip=True)
     for pattern in [
         r'판매가[^\d]*([\d,]+)\s*원',
         r'할인가[^\d]*([\d,]+)\s*원',
         r'최종가[^\d]*([\d,]+)\s*원',
+        r'현재가[^\d]*([\d,]+)\s*원',
+        r'구매가[^\d]*([\d,]+)\s*원',
     ]:
         m = re.search(pattern, text)
         if m:
@@ -120,6 +149,11 @@ def _fetch_with_requests(url: str) -> int | None:
         # 한국어 쇼핑몰은 EUC-KR 또는 UTF-8
         if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
             resp.encoding = resp.apparent_encoding
+        price = _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
+        if price:
+            return price
+        # EUC-KR 인코딩 재시도 (컴퓨존 등 일부 한국 쇼핑몰)
+        resp.encoding = "euc-kr"
         return _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
     except Exception:
         return None
@@ -220,6 +254,36 @@ if "editing_key" not in st.session_state:
     st.session_state.editing_key = None  # (current_tab, idx)
 if "show_add_form" not in st.session_state:
     st.session_state.show_add_form = False
+
+
+# --- [URL 파싱 진단] ---
+with st.expander("🔧 URL 파싱 진단 (가격 조회 안 될 때)"):
+    diag_url = st.text_input("테스트할 URL 입력", key="diag_url")
+    if st.button("파싱 테스트", key="diag_btn"):
+        if diag_url.strip().startswith("http"):
+            with st.spinner("요청 중..."):
+                try:
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Accept-Language": "ko-KR,ko;q=0.9",
+                        "Referer": "https://www.compuzone.co.kr/",
+                    }
+                    resp = requests.get(diag_url.strip(), headers=headers, timeout=12)
+                    st.write(f"**HTTP 상태코드:** {resp.status_code}")
+                    st.write(f"**인코딩 감지:** {resp.apparent_encoding}")
+                    if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
+                        resp.encoding = resp.apparent_encoding
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    parsed = _parse_price_from_soup(soup)
+                    if parsed:
+                        st.success(f"✅ 파싱 성공: **{parsed:,}원**")
+                    else:
+                        st.error("❌ 파싱 실패 — 페이지 텍스트 일부:")
+                        st.code(soup.get_text(" ", strip=True)[:800])
+                except Exception as e:
+                    st.error(f"요청 오류: {e}")
+        else:
+            st.warning("http(s)://로 시작하는 URL을 입력해주세요.")
 
 
 # --- [신규 상품 등록] ---
