@@ -38,44 +38,55 @@ def extract_first_price(text: str) -> int | None:
 
 # --- [크롤링: 공통 파싱] ---
 def _parse_price_from_soup(soup) -> int | None:
-    """BeautifulSoup 객체에서 가격 추출"""
-    # og: 메타태그
-    for prop in ["og:price:amount", "product:price:amount"]:
-        meta = soup.find("meta", property=prop)
-        if meta:
-            price = extract_first_price(meta.get("content", ""))
-            if price:
-                return price
+    """BeautifulSoup 객체에서 가격 추출.
 
-    # CSS 선택자 (컴퓨존 포함 다수 쇼핑몰)
-    for selector in [
-        "#product_content_2_price",           # 컴퓨존 메인
-        "#prd_sale_price", "#prd_price",      # 컴퓨존 추가
-        "#sell_price", "#sale_price", "#final_price",
-        "#salePrice", "#realPrice", "#dispPrice",
-        ".sell_price", ".sale_price", ".final_price",
-        ".selling_price", ".goods_price", ".product_price",
-        ".salePrice", ".sale-price", ".real-price",
-        "span.price", "strong.price", ".price_num",
-        "#priceStd", ".priceStd",
-        ".item_price strong", ".price_wrap strong",
-        "em.price", "b.price",
-    ]:
-        el = soup.select_one(selector)
-        if el:
-            price = extract_first_price(el.get_text())
-            if price:
-                return price
+    우선순위:
+    1. 판매가/할인가 레이블 텍스트 (실제 판매 금액, 정가 제외)
+    2. DOM 레이블 → 인접 셀 탐색
+    3. JSON-LD / og: 메타태그
+    4. CSS 셀렉터 (정가 레이블 없는 경우 fallback)
+    5. JS 인라인 변수
+    """
+    # ── 1단계: 판매가/할인가 레이블 텍스트 우선 (정가·권장소비자가 제외)
+    # 정가 레이블이 붙은 금액은 건너뜀
+    SKIP_RE = re.compile(r'정가|권장소비자가|시중가|소비자가|원가')
+    SALE_RE = re.compile(
+        r'(?:판매가|할인가|최종가|구매가|현재가|특가)[^\d]{0,6}([\d,]{4,})\s*원',
+        re.S,
+    )
+    text = soup.get_text(" ", strip=True)
+    # 정가 금액 먼저 수집해서 제외 목록 만들기
+    skip_prices: set[int] = set()
+    for m in re.finditer(
+        r'(?:정가|권장소비자가|시중가|소비자가|원가)[^\d]{0,6}([\d,]{4,})\s*원', text
+    ):
+        v = extract_first_price(m.group(1))
+        if v:
+            skip_prices.add(v)
 
-    # data-* 속성에서 가격 추출 (컴퓨존 등 일부 쇼핑몰)
-    for attr in ["data-price", "data-sale-price", "data-sell-price", "data-final-price"]:
-        el = soup.find(attrs={attr: True})
-        if el:
-            price = extract_first_price(el[attr])
-            if price:
-                return price
+    m = SALE_RE.search(text)
+    if m:
+        price = extract_first_price(m.group(1))
+        if price and price not in skip_prices:
+            return price
 
-    # JSON-LD Schema.org
+    # ── 2단계: DOM 테이블에서 레이블 셀 → 값 셀 탐색
+    LABEL_TEXTS = ["판매가", "할인가", "최종가", "구매가", "현재가", "특가"]
+    for th in soup.find_all(["th", "td", "dt", "span", "label"]):
+        if any(lbl in (th.get_text(strip=True) or "") for lbl in LABEL_TEXTS):
+            # 같은 행(tr) 또는 바로 다음 형제에서 숫자 추출
+            tr = th.find_parent("tr")
+            if tr:
+                for td in tr.find_all("td"):
+                    price = extract_first_price(td.get_text())
+                    if price and price not in skip_prices:
+                        return price
+            for sib in th.find_next_siblings()[:3]:
+                price = extract_first_price(sib.get_text())
+                if price and price not in skip_prices:
+                    return price
+
+    # ── 3단계: JSON-LD Schema.org
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string or "")
@@ -87,12 +98,48 @@ def _parse_price_from_soup(soup) -> int | None:
             raw = offers.get("price", offers.get("Price", ""))
             if raw:
                 price = extract_first_price(str(raw))
-                if price:
+                if price and price not in skip_prices:
                     return price
         except Exception:
             pass
 
-    # JavaScript 변수에서 가격 추출 (인라인 스크립트)
+    # ── 4단계: og: 메타태그
+    for prop in ["og:price:amount", "product:price:amount"]:
+        meta = soup.find("meta", property=prop)
+        if meta:
+            price = extract_first_price(meta.get("content", ""))
+            if price and price not in skip_prices:
+                return price
+
+    # ── 5단계: CSS 선택자 (정가가 없거나 위에서 못 찾은 경우 fallback)
+    for selector in [
+        "#prd_sale_price", "#sell_price", "#sale_price", "#final_price",
+        "#salePrice", "#realPrice", "#dispPrice",
+        ".sell_price", ".sale_price", ".final_price",
+        ".selling_price", ".goods_price", ".product_price",
+        ".salePrice", ".sale-price", ".real-price",
+        "span.price", "strong.price", ".price_num",
+        "#priceStd", ".priceStd",
+        ".item_price strong", ".price_wrap strong",
+        "em.price", "b.price",
+        "#product_content_2_price",  # 컴퓨존 (정가 가능성 있어 후순위)
+        "#prd_price",
+    ]:
+        el = soup.select_one(selector)
+        if el:
+            price = extract_first_price(el.get_text())
+            if price and price not in skip_prices:
+                return price
+
+    # ── 6단계: data-* 속성
+    for attr in ["data-price", "data-sale-price", "data-sell-price", "data-final-price"]:
+        el = soup.find(attrs={attr: True})
+        if el:
+            price = extract_first_price(el[attr])
+            if price and price not in skip_prices:
+                return price
+
+    # ── 7단계: JavaScript 인라인 변수
     for script in soup.find_all("script"):
         js = script.string or ""
         if not js.strip():
@@ -105,26 +152,11 @@ def _parse_price_from_soup(soup) -> int | None:
             r"'price'\s*:\s*'?([\d,]+)'?",
             r'var\s+price\s*=\s*([\d,]+)',
         ]:
-            m = re.search(pattern, js, re.IGNORECASE)
-            if m:
-                price = extract_first_price(m.group(1))
-                if price:
+            m2 = re.search(pattern, js, re.IGNORECASE)
+            if m2:
+                price = extract_first_price(m2.group(1))
+                if price and price not in skip_prices:
                     return price
-
-    # 텍스트 regex
-    text = soup.get_text(" ", strip=True)
-    for pattern in [
-        r'판매가[^\d]*([\d,]+)\s*원',
-        r'할인가[^\d]*([\d,]+)\s*원',
-        r'최종가[^\d]*([\d,]+)\s*원',
-        r'현재가[^\d]*([\d,]+)\s*원',
-        r'구매가[^\d]*([\d,]+)\s*원',
-    ]:
-        m = re.search(pattern, text)
-        if m:
-            price = extract_first_price(m.group(1))
-            if price:
-                return price
 
     return None
 
