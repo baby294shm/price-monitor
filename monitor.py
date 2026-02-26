@@ -233,7 +233,7 @@ if st.session_state.show_add_form:
             with st.spinner("실시간 가격 조회 중..."):
                 live_price = fetch_compuzone_price(r_link)
             if live_price is None:
-                live_price = r_cp
+                live_price = 0  # 조회 실패 시 0으로 저장 → "실시간 미조회" 표시
             new_row = {
                 "구분": r_type, "카테고리": r_cat, "상품명": r_name,
                 "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": live_price,
@@ -272,7 +272,6 @@ def price_html(row, show_fall: bool) -> str:
     fall_price = safe_int(row["가을판매가"])
     base_price = safe_int(row["컴퓨존판매가"])
     live_price = safe_int(row["실시간가"])
-    diff = live_price - base_price
 
     sep = '<span style="color:#ddd;margin:0 3px;">·</span>'
     parts = []
@@ -292,12 +291,17 @@ def price_html(row, show_fall: bool) -> str:
     if live_price == 0:
         parts.append('<span style="color:#aaa;font-size:0.85em;">실시간 미조회</span>')
     else:
-        if diff > 0:
-            delta = f'<span style="color:#e74c3c;font-weight:600;font-size:0.88em;margin-left:3px;">▲ {diff:,}원</span>'
-        elif diff < 0:
-            delta = f'<span style="color:#27ae60;font-weight:600;font-size:0.88em;margin-left:3px;">▼ {abs(diff):,}원</span>'
+        # 기준가가 있을 때만 델타 표시
+        if base_price > 0:
+            diff = live_price - base_price
+            if diff > 0:
+                delta = f'<span style="color:#e74c3c;font-weight:600;font-size:0.88em;margin-left:3px;">▲ {diff:,}원</span>'
+            elif diff < 0:
+                delta = f'<span style="color:#27ae60;font-weight:600;font-size:0.88em;margin-left:3px;">▼ {abs(diff):,}원</span>'
+            else:
+                delta = '<span style="color:#ccc;font-size:0.88em;margin-left:3px;">─</span>'
         else:
-            delta = '<span style="color:#ccc;font-size:0.88em;margin-left:3px;">─</span>'
+            delta = ''
         parts.append(
             f'<span style="color:#aaa;font-size:0.76em;">실시간</span>'
             f'<b style="font-size:0.95em;margin-left:2px;">{live_price:,}원</b>'
@@ -305,7 +309,7 @@ def price_html(row, show_fall: bool) -> str:
         )
 
     return (
-        f'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">'
+        f'<div style="display:flex;align-items:center;gap:4px;flex-wrap:nowrap;overflow:hidden;">'
         + sep.join(parts)
         + '</div>'
     )
@@ -330,7 +334,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
         with st.container(border=True):
             if not is_editing:
                 # ── 일반 표시
-                c_info, c_price, c_btns = st.columns([0.50, 0.37, 0.13])
+                c_info, c_price, c_btns = st.columns([0.40, 0.47, 0.13])
 
                 with c_info:
                     cat  = str(row["카테고리"]).strip()
