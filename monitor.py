@@ -309,12 +309,47 @@ with st.expander("🔧 URL 파싱 진단 (가격 조회 안 될 때)"):
                     if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
                         resp.encoding = resp.apparent_encoding
                     soup = BeautifulSoup(resp.text, "html.parser")
+                    text_full = soup.get_text(" ", strip=True)
+
+                    # ── 상세 진단 ──
+                    st.write("**📋 가격 관련 텍스트 (앞 2000자):**")
+                    # 가격 레이블 주변 텍스트 추출
+                    price_context = []
+                    for kw in ["정가", "판매가", "할인가", "특가", "현재가"]:
+                        idx = text_full.find(kw)
+                        if idx != -1:
+                            price_context.append(f"[{kw} @ {idx}] " + text_full[idx:idx+60])
+                    if price_context:
+                        st.code("\n".join(price_context))
+                    else:
+                        st.warning("가격 레이블 텍스트 없음")
+
+                    # skip_prices
+                    SKIP_PATTERN = r'(?:정가|권장소비자가|시중가|소비자가|원가)[^\d]{0,6}([\d,]{4,})\s*원'
+                    skip_prices: set[int] = set()
+                    for sm in re.finditer(SKIP_PATTERN, text_full):
+                        v = extract_first_price(sm.group(1))
+                        if v:
+                            skip_prices.add(v)
+                    st.write(f"**제외 목록(정가 등):** {[f'{p:,}원' for p in skip_prices] or '없음'}")
+
+                    # SALE_RE 매칭
+                    SALE_PATTERN = re.compile(
+                        r'(?:판매가|할인가|최종가|구매가|현재가|특가)[^\d]{0,6}([\d,]{4,})\s*원', re.S
+                    )
+                    sale_matches = []
+                    for sm in SALE_PATTERN.finditer(text_full):
+                        v = extract_first_price(sm.group(1))
+                        if v:
+                            sale_matches.append(v)
+                    st.write(f"**판매가 패턴 매칭:** {[f'{p:,}원' for p in sale_matches] or '없음'}")
+
                     parsed = _parse_price_from_soup(soup)
                     if parsed:
-                        st.success(f"✅ 파싱 성공: **{parsed:,}원**")
+                        st.success(f"✅ 최종 파싱 결과: **{parsed:,}원**")
                     else:
                         st.error("❌ 파싱 실패 — 페이지 텍스트 일부:")
-                        st.code(soup.get_text(" ", strip=True)[:800])
+                        st.code(text_full[:800])
                 except Exception as e:
                     st.error(f"요청 오류: {e}")
         else:
