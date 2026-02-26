@@ -13,7 +13,7 @@ DB_FILE = "product_db.xlsx"
 CATEGORY_LIST = ["전체보기", "PC", "워크스테이션", "SSD", "HDD", "RAM", "VGA"]
 
 st.set_page_config(page_title="컴퓨존 가격모니터", layout="wide")
-st.caption("🍁 컴퓨존 가격모니터")
+st.caption("컴퓨존 가격모니터")
 
 
 # --- [유틸] ---
@@ -228,14 +228,17 @@ if st.session_state.show_add_form:
     r_cp   = c5.number_input("기준가",     value=0, min_value=0, step=1000)
     r_memo = c6.text_input("메모")
 
-    if c7.button("추가하기", use_container_width=True):
-        if r_name:
+    add_clicked = c7.button("추가하기", use_container_width=True)
+    if add_clicked:
+        if not r_name.strip():
+            st.warning("상품명을 입력해주세요.")
+        else:
             with st.spinner("실시간 가격 조회 중..."):
                 live_price = fetch_compuzone_price(r_link)
             if live_price is None:
                 live_price = 0  # 조회 실패 시 0으로 저장 → "실시간 미조회" 표시
             new_row = {
-                "구분": r_type, "카테고리": r_cat, "상품명": r_name,
+                "구분": r_type, "카테고리": r_cat, "상품명": r_name.strip(),
                 "가을판매가": r_my, "컴퓨존판매가": r_cp, "실시간가": live_price,
                 "메모": r_memo, "링크": r_link.strip(),
             }
@@ -304,12 +307,12 @@ def price_html(row, show_fall: bool) -> str:
             delta = ''
         parts.append(
             f'<span style="color:#aaa;font-size:0.76em;">실시간</span>'
-            f'<b style="font-size:0.95em;margin-left:2px;">{live_price:,}원</b>'
+            f'<b style="font-size:0.88em;margin-left:2px;">{live_price:,}원</b>'
             f'{delta}'
         )
 
     return (
-        f'<div style="display:flex;align-items:center;gap:4px;flex-wrap:nowrap;overflow:hidden;">'
+        f'<div style="white-space:nowrap;overflow:hidden;font-size:0.85em;">'
         + sep.join(parts)
         + '</div>'
     )
@@ -346,7 +349,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
                             f'<span style="font-size:0.72em;color:#888;background:#f0f0f0;'
                             f'padding:1px 5px;border-radius:3px;white-space:nowrap;">{cat}</span>'
                         )
-                    info_parts.append(f'<span style="font-size:0.93em;font-weight:600;">{name}</span>')
+                    info_parts.append(f'<span style="font-size:0.85em;font-weight:600;">{name}</span>')
                     if memo and memo not in ("nan", "-", "0", ""):
                         info_parts.append(
                             f'<span style="font-size:0.78em;color:#aaa;white-space:nowrap;">📝 {memo}</span>'
