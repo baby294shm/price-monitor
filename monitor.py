@@ -64,11 +64,14 @@ def _parse_price_from_soup(soup) -> int | None:
         if v:
             skip_prices.add(v)
 
-    m = SALE_RE.search(text)
-    if m:
+    # 모든 매칭 수집 후 최솟값 반환 (판매가 행에 정가+할인가 같이 표시될 때 대응)
+    sale_candidates = []
+    for m in SALE_RE.finditer(text):
         price = extract_first_price(m.group(1))
         if price and price not in skip_prices:
-            return price
+            sale_candidates.append(price)
+    if sale_candidates:
+        return min(sale_candidates)
 
     # ── 2단계: DOM 테이블에서 레이블 셀 → 값 셀 탐색
     LABEL_TEXTS = ["판매가", "할인가", "최종가", "구매가", "현재가", "특가"]
