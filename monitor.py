@@ -1,3 +1,5 @@
+import shutil
+import time
 import streamlit as st
 import pandas as pd
 import os
@@ -23,9 +25,8 @@ def safe_int(val):
 
 
 def extract_first_price(text: str) -> int | None:
-    """텍스트에서 첫 번째 유효한 가격 추출 (1,000 ~ 30,000,000원 범위)"""
-    matches = re.findall(r"[\d,]+", text)
-    for m in matches:
+    """텍스트에서 첫 번째 유효한 가격 추출 (1,000 ~ 30,000,000원)"""
+    for m in re.findall(r"[\d,]+", text):
         try:
             num = int(m.replace(",", ""))
             if 1_000 <= num <= 30_000_000:
@@ -35,11 +36,67 @@ def extract_first_price(text: str) -> int | None:
     return None
 
 
-# --- [실시간 가격 크롤링] ---
-def fetch_compuzone_price(url: str) -> int | None:
-    """컴퓨존 상품 URL에서 판매가 크롤링. 실패 시 None 반환."""
-    if not url or not str(url).strip():
-        return None
+# --- [크롤링: 공통 파싱] ---
+def _parse_price_from_soup(soup) -> int | None:
+    """BeautifulSoup 객체에서 가격 추출"""
+    # og: 메타태그
+    for prop in ["og:price:amount", "product:price:amount"]:
+        meta = soup.find("meta", property=prop)
+        if meta:
+            price = extract_first_price(meta.get("content", ""))
+            if price:
+                return price
+
+    # CSS 선택자
+    for selector in [
+        "#product_content_2_price",
+        "#sell_price", "#sale_price", "#final_price",
+        ".sell_price", ".sale_price", ".final_price",
+        ".selling_price", ".goods_price", ".product_price",
+        "span.price", "strong.price", ".price_num",
+        "#priceStd", ".priceStd",
+    ]:
+        el = soup.select_one(selector)
+        if el:
+            price = extract_first_price(el.get_text())
+            if price:
+                return price
+
+    # JSON-LD Schema.org
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            offers = data.get("offers", data.get("Offers", {}))
+            if isinstance(offers, list):
+                offers = offers[0]
+            raw = offers.get("price", offers.get("Price", ""))
+            if raw:
+                price = extract_first_price(str(raw))
+                if price:
+                    return price
+        except Exception:
+            pass
+
+    # 텍스트 regex
+    text = soup.get_text(" ", strip=True)
+    for pattern in [
+        r'판매가[^\d]*([\d,]+)\s*원',
+        r'할인가[^\d]*([\d,]+)\s*원',
+        r'최종가[^\d]*([\d,]+)\s*원',
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            price = extract_first_price(m.group(1))
+            if price:
+                return price
+
+    return None
+
+
+# --- [크롤링: requests (빠름)] ---
+def _fetch_with_requests(url: str) -> int | None:
     try:
         headers = {
             "User-Agent": (
@@ -50,67 +107,75 @@ def fetch_compuzone_price(url: str) -> int | None:
             "Accept-Language": "ko-KR,ko;q=0.9",
             "Referer": "https://www.compuzone.co.kr/",
         }
-        resp = requests.get(str(url).strip(), headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         resp.encoding = resp.apparent_encoding
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 방법 1: og: 메타태그 (빠르고 정확)
-        for prop in ["og:price:amount", "product:price:amount"]:
-            meta = soup.find("meta", property=prop)
-            if meta:
-                price = extract_first_price(meta.get("content", ""))
-                if price:
-                    return price
-
-        # 방법 2: CSS 선택자 (컴퓨존 전용 + 한국 쇼핑몰 공통)
-        for selector in [
-            "#product_content_2_price",
-            "#sell_price", "#sale_price", "#final_price",
-            ".sell_price", ".sale_price", ".final_price",
-            ".selling_price", ".goods_price", ".product_price",
-            "span.price", "strong.price", ".price_num",
-            "#priceStd", ".priceStd",
-        ]:
-            el = soup.select_one(selector)
-            if el:
-                price = extract_first_price(el.get_text())
-                if price:
-                    return price
-
-        # 방법 3: JSON-LD Schema.org
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(script.string or "")
-                if isinstance(data, list):
-                    data = data[0]
-                offers = data.get("offers", data.get("Offers", {}))
-                if isinstance(offers, list):
-                    offers = offers[0]
-                raw = offers.get("price", offers.get("Price", ""))
-                if raw:
-                    price = extract_first_price(str(raw))
-                    if price:
-                        return price
-            except Exception:
-                pass
-
-        # 방법 4: 텍스트 regex
-        text = soup.get_text(" ", strip=True)
-        for pattern in [
-            r'판매가[^\d]*([\d,]+)\s*원',
-            r'할인가[^\d]*([\d,]+)\s*원',
-            r'최종가[^\d]*([\d,]+)\s*원',
-        ]:
-            m = re.search(pattern, text)
-            if m:
-                price = extract_first_price(m.group(1))
-                if price:
-                    return price
-
-        return None
+        return _parse_price_from_soup(BeautifulSoup(resp.text, "html.parser"))
     except Exception:
         return None
+
+
+# --- [크롤링: Selenium (JS 렌더링)] ---
+def _get_chrome_driver():
+    """헤드리스 Chrome 드라이버 생성. 설치 안 됐으면 None 반환."""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1280,800")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+
+        chrome_bin = (
+            shutil.which("chromium") or
+            shutil.which("chromium-browser") or
+            shutil.which("google-chrome")
+        )
+        if chrome_bin:
+            options.binary_location = chrome_bin
+
+        driver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
+        service = Service(driver_path)
+        return webdriver.Chrome(service=service, options=options)
+    except Exception:
+        return None
+
+
+def fetch_compuzone_price(url: str) -> int | None:
+    """단일 URL 가격 크롤링 (신규 등록 시 사용)"""
+    if not url or not str(url).strip():
+        return None
+    url = str(url).strip()
+
+    # 1차: requests (빠름)
+    price = _fetch_with_requests(url)
+    if price:
+        return price
+
+    # 2차: Selenium (JS 렌더링)
+    driver = _get_chrome_driver()
+    if not driver:
+        return None
+    try:
+        driver.set_page_load_timeout(15)
+        driver.get(url)
+        time.sleep(2)
+        return _parse_price_from_soup(BeautifulSoup(driver.page_source, "html.parser"))
+    except Exception:
+        return None
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 # --- [데이터 로드] ---
@@ -141,6 +206,8 @@ def load_data() -> pd.DataFrame:
 # --- [세션 초기화] ---
 if "df" not in st.session_state:
     st.session_state.df = load_data()
+if "editing_key" not in st.session_state:
+    st.session_state.editing_key = None  # (current_tab, idx)
 
 
 # --- [신규 상품 등록] ---
@@ -212,19 +279,24 @@ def price_html(row, show_fall: bool) -> str:
         else:
             diff_txt = '&nbsp;<span style="color:#aaa;font-size:0.85em;">─</span>'
 
-    lines = []
     row1_parts = []
     if show_fall and fall_price > 0:
-        row1_parts.append(f'<span style="color:#aaa;font-size:0.78em;">가을가</span> <span style="font-size:0.88em;">{fall_price:,}원</span>')
+        row1_parts.append(
+            f'<span style="color:#aaa;font-size:0.78em;">가을가</span>'
+            f' <span style="font-size:0.88em;">{fall_price:,}원</span>'
+        )
     if base_price > 0:
-        row1_parts.append(f'<span style="color:#aaa;font-size:0.78em;">기준가</span> <span style="font-size:0.88em;">{base_price:,}원</span>')
+        row1_parts.append(
+            f'<span style="color:#aaa;font-size:0.78em;">기준가</span>'
+            f' <span style="font-size:0.88em;">{base_price:,}원</span>'
+        )
+
+    lines = []
     if row1_parts:
         lines.append(" &nbsp;·&nbsp; ".join(row1_parts))
-
     lines.append(
         f'<span style="color:#aaa;font-size:0.78em;">실시간</span> {live_txt}{diff_txt}'
     )
-
     return "<br>".join(lines)
 
 
@@ -234,102 +306,176 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
         st.info("표시할 상품이 없습니다.")
         return
 
-    # 상단 액션 버튼
-    act_c1, act_c2, act_c3 = st.columns([7, 1.5, 1.5])
-    refresh_btn = act_c2.button("🔄 가격 업데이트", key=f"re_{current_tab}", use_container_width=True)
-    delete_btn  = act_c3.button("🗑️ 선택 삭제",   key=f"del_{current_tab}", use_container_width=True)
+    # 상단: 가격 업데이트 버튼
+    _, btn_col = st.columns([8, 2])
+    refresh_btn = btn_col.button(
+        "🔄 가격 업데이트", key=f"re_{current_tab}", use_container_width=True
+    )
 
-    selected_indices = []
-
+    # ── 각 상품 카드
     for idx, row in target_df.iterrows():
+        is_editing = st.session_state.editing_key == (current_tab, idx)
+
         with st.container(border=True):
-            c_chk, c_info, c_price, c_btn = st.columns([0.04, 0.42, 0.44, 0.10])
+            if not is_editing:
+                # ── 일반 표시
+                c_info, c_price, c_btns = st.columns([0.45, 0.42, 0.13])
 
-            # 체크박스
-            with c_chk:
-                if st.checkbox("", key=f"sel_{current_tab}_{idx}"):
-                    selected_indices.append(idx)
+                with c_info:
+                    cat  = str(row["카테고리"]).strip()
+                    name = str(row["상품명"]).strip()
+                    memo = str(row["메모"]).strip()
+                    parts = []
+                    if cat and cat not in ("nan", ""):
+                        parts.append(
+                            f'<span style="font-size:0.75em;color:#888;'
+                            f'background:#f0f0f0;padding:1px 6px;border-radius:3px;">{cat}</span>'
+                        )
+                    parts.append(f'<span style="font-size:0.95em;font-weight:600;">{name}</span>')
+                    if memo and memo not in ("nan", "-", "0", ""):
+                        parts.append(f'<span style="font-size:0.78em;color:#888;">📝 {memo}</span>')
+                    st.markdown("<br>".join(parts), unsafe_allow_html=True)
 
-            # 상품 정보
-            with c_info:
-                cat = str(row["카테고리"]).strip()
-                name = str(row["상품명"]).strip()
-                memo = str(row["메모"]).strip()
+                with c_price:
+                    show_fall = current_tab != "가격비교"
+                    st.markdown(
+                        f'<div style="padding:4px 0;">{price_html(row, show_fall)}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                info_parts = []
-                if cat and cat not in ("nan", ""):
-                    info_parts.append(f'<span style="font-size:0.75em;color:#888;background:#f0f0f0;padding:1px 6px;border-radius:3px;">{cat}</span>')
-                info_parts.append(f'<span style="font-size:0.95em;font-weight:600;">{name}</span>')
-                if memo and memo not in ("nan", "-", "0", ""):
-                    info_parts.append(f'<span style="font-size:0.78em;color:#888;">📝 {memo}</span>')
+                with c_btns:
+                    link = str(row["링크"]).strip()
+                    if link.startswith("http"):
+                        st.link_button("🔗 열기", link, use_container_width=True)
+                    if st.button("✏️ 수정", key=f"edit_{current_tab}_{idx}", use_container_width=True):
+                        st.session_state.editing_key = (current_tab, idx)
+                        st.rerun()
 
-                st.markdown("<br>".join(info_parts), unsafe_allow_html=True)
+            else:
+                # ── 수정 폼 (신규 등록과 동일한 레이아웃)
+                st.caption("✏️ 상품 수정")
+                fe1, fe2, fe3 = st.columns([1, 1, 2])
+                n_type = fe1.selectbox(
+                    "구분", ["가격비교", "자주구매"],
+                    index=0 if str(row["구분"]) == "가격비교" else 1,
+                    key=f"etype_{current_tab}_{idx}",
+                )
+                cat_options = CATEGORY_LIST[1:]
+                cat_default = cat_options.index(str(row["카테고리"])) if str(row["카테고리"]) in cat_options else 0
+                n_cat = fe2.selectbox(
+                    "카테고리", cat_options,
+                    index=cat_default,
+                    key=f"ecat_{current_tab}_{idx}",
+                )
+                n_name = fe3.text_input("상품명", value=str(row["상품명"]), key=f"ename_{current_tab}_{idx}")
 
-            # 가격 (compact HTML)
-            with c_price:
-                show_fall = current_tab != "가격비교"
-                st.markdown(
-                    f'<div style="padding:4px 0;">{price_html(row, show_fall)}</div>',
-                    unsafe_allow_html=True,
+                n_link = st.text_input("컴퓨존 URL", value=str(row["링크"]), key=f"elink_{current_tab}_{idx}")
+
+                fe4, fe5, fe6 = st.columns([1, 1, 2])
+                n_fall = fe4.number_input(
+                    "가을판매가", value=safe_int(row["가을판매가"]),
+                    min_value=0, step=1000, key=f"efall_{current_tab}_{idx}",
+                )
+                n_base = fe5.number_input(
+                    "기준가", value=safe_int(row["컴퓨존판매가"]),
+                    min_value=0, step=1000, key=f"ebase_{current_tab}_{idx}",
+                )
+                memo_val = str(row["메모"])
+                n_memo = fe6.text_input(
+                    "메모",
+                    value="" if memo_val in ("nan", "0", "") else memo_val,
+                    key=f"ememo_{current_tab}_{idx}",
                 )
 
-            # 링크 버튼
-            with c_btn:
-                st.write("")
-                link = str(row["링크"]).strip()
-                if link and link.startswith("http"):
-                    st.link_button("열기", link)
+                fb1, fb2, fb3 = st.columns([1, 1, 4])
+                save_btn   = fb1.button("💾 저장", key=f"save_{current_tab}_{idx}", type="primary", use_container_width=True)
+                delete_btn = fb2.button("🗑️ 삭제", key=f"del_{current_tab}_{idx}", use_container_width=True)
+                cancel_btn = fb3.button("취소",    key=f"cancel_{current_tab}_{idx}")
 
-    # ── 가격 업데이트
+                if save_btn:
+                    st.session_state.df.at[idx, "구분"]        = n_type
+                    st.session_state.df.at[idx, "카테고리"]    = n_cat
+                    st.session_state.df.at[idx, "상품명"]      = n_name
+                    st.session_state.df.at[idx, "링크"]        = n_link.strip()
+                    st.session_state.df.at[idx, "가을판매가"]  = n_fall
+                    st.session_state.df.at[idx, "컴퓨존판매가"] = n_base
+                    st.session_state.df.at[idx, "메모"]        = n_memo
+                    st.session_state.df.to_excel(DB_FILE, index=False)
+                    st.session_state.editing_key = None
+                    st.rerun()
+
+                if delete_btn:
+                    st.session_state.df = (
+                        st.session_state.df.drop(idx).reset_index(drop=True)
+                    )
+                    st.session_state.df.to_excel(DB_FILE, index=False)
+                    st.session_state.editing_key = None
+                    st.rerun()
+
+                if cancel_btn:
+                    st.session_state.editing_key = None
+                    st.rerun()
+
+    # ── 가격 업데이트 (Selenium 우선, fallback: requests)
     if refresh_btn:
         progress_bar = st.progress(0, text="가격 조회 중...")
         total   = len(target_df)
         updated = 0
         failed  = 0
+
+        # Chrome 드라이버 한 번만 생성 (JS 렌더링용)
+        driver = _get_chrome_driver()
+        selenium_ok = driver is not None
+
         for i, (idx, row) in enumerate(target_df.iterrows()):
             link = str(row.get("링크", "")).strip()
+            price = None
+
             if link and link.startswith("http"):
-                price = fetch_compuzone_price(link)
-                if price:
-                    st.session_state.df.at[idx, "실시간가"] = price
-                    updated += 1
-                else:
-                    failed += 1
-            progress_bar.progress((i + 1) / total, text=f"조회 중... ({i+1}/{total})")
+                # 1차: Selenium (JS 렌더링)
+                if selenium_ok:
+                    try:
+                        driver.set_page_load_timeout(15)
+                        driver.get(link)
+                        time.sleep(2)
+                        price = _parse_price_from_soup(
+                            BeautifulSoup(driver.page_source, "html.parser")
+                        )
+                    except Exception:
+                        pass
+
+                # 2차: requests fallback
+                if not price:
+                    price = _fetch_with_requests(link)
+
+            if price:
+                st.session_state.df.at[idx, "실시간가"] = price
+                updated += 1
+            else:
+                failed += 1
+
+            progress_bar.progress(
+                (i + 1) / total,
+                text=f"조회 중... ({i+1}/{total})",
+            )
+
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
         st.session_state.df.to_excel(DB_FILE, index=False)
+
         if updated:
-            st.success(f"✅ {updated}개 갱신 완료" + (f" / {failed}개 조회 실패" if failed else ""))
+            st.success(
+                f"✅ {updated}개 갱신 완료"
+                + (f" / {failed}개 조회 실패" if failed else "")
+                + ("" if selenium_ok else " (Chrome 미설치 — requests 모드)")
+            )
         else:
-            st.warning(f"⚠️ 가격 조회 실패 ({failed}개) — URL을 확인해 주세요.")
+            st.warning(f"⚠️ 전체 조회 실패 ({failed}개) — URL을 확인해 주세요.")
         st.rerun()
-
-    # ── 선택 삭제
-    if delete_btn and selected_indices:
-        st.session_state.df = (
-            st.session_state.df.drop(selected_indices).reset_index(drop=True)
-        )
-        st.session_state.df.to_excel(DB_FILE, index=False)
-        st.rerun()
-
-    # ── 수정 폼 (체크박스 선택 시 하단 표시)
-    if selected_indices:
-        st.divider()
-        e_idx = selected_indices[0]
-        t = st.session_state.df.loc[e_idx]
-        with st.form(f"edit_form_{current_tab}"):
-            st.write(f"🛠️ **{t['상품명']}** 수정")
-            ec1, ec2, ec3, ec4 = st.columns([1, 1, 2, 2])
-            nf = ec1.number_input("가을판매가", value=safe_int(t["가을판매가"]), min_value=0, step=1000)
-            nc = ec2.number_input("기준가",     value=safe_int(t["컴퓨존판매가"]), min_value=0, step=1000)
-            nl = ec3.text_input("URL", value=str(t["링크"]))
-            nm = ec4.text_input("메모", value="" if str(t["메모"]) in ("nan", "0") else str(t["메모"]))
-            if st.form_submit_button("저장하기", type="primary"):
-                st.session_state.df.at[e_idx, "가을판매가"]   = nf
-                st.session_state.df.at[e_idx, "컴퓨존판매가"] = nc
-                st.session_state.df.at[e_idx, "링크"]         = nl
-                st.session_state.df.at[e_idx, "메모"]         = nm
-                st.session_state.df.to_excel(DB_FILE, index=False)
-                st.rerun()
 
 
 # --- [출력] ---
