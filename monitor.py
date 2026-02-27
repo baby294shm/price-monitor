@@ -2,15 +2,31 @@ import shutil
 import time
 import streamlit as st
 import pandas as pd
-import os
 import re
 import json
 import requests
 from bs4 import BeautifulSoup
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- [설정] ---
-DB_FILE = "product_db.xlsx"
 CATEGORY_LIST = ["전체보기", "PC", "워크스테이션", "SSD", "HDD", "RAM", "VGA"]
+_GSHEET_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+
+@st.cache_resource
+def _gs_client():
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=_GSHEET_SCOPES
+    )
+    return gspread.Client(auth=creds)
+
+
+def _get_sheet():
+    return _gs_client().open_by_url(st.secrets["gsheet"]["url"]).sheet1
 
 st.set_page_config(page_title="컴퓨존 가격모니터", layout="wide")
 st.caption("컴퓨존 가격모니터")
@@ -257,12 +273,28 @@ def fetch_compuzone_price(url: str) -> int | None:
             pass
 
 
+# --- [데이터 저장] ---
+def save_data(df: pd.DataFrame) -> None:
+    try:
+        sh = _get_sheet()
+        clean = df.copy().fillna("")
+        for col in ["가을판매가", "컴퓨존판매가", "실시간가"]:
+            if col in clean.columns:
+                clean[col] = clean[col].apply(safe_int)
+        sh.clear()
+        sh.update([clean.columns.tolist()] + clean.values.tolist())
+    except Exception as e:
+        st.warning(f"⚠️ 저장 실패: {e}")
+
+
 # --- [데이터 로드] ---
 def load_data() -> pd.DataFrame:
     cols = ["구분", "카테고리", "상품명", "가을판매가", "컴퓨존판매가", "실시간가", "메모", "링크"]
-    if os.path.exists(DB_FILE):
-        try:
-            df = pd.read_excel(DB_FILE)
+    try:
+        sh = _get_sheet()
+        records = sh.get_all_records()
+        if records:
+            df = pd.DataFrame(records)
             for c in cols:
                 if c not in df.columns:
                     df[c] = "자주구매" if c == "구분" else 0
@@ -274,11 +306,12 @@ def load_data() -> pd.DataFrame:
                 if mask.any():
                     df.loc[mask, price_col] = 0
                     fixed = True
+            df = df[cols]
             if fixed:
-                df.to_excel(DB_FILE, index=False)
+                save_data(df)
             return df
-        except Exception:
-            pass
+    except Exception as e:
+        st.warning(f"⚠️ 데이터 로드 실패: {e}")
     return pd.DataFrame(columns=cols)
 
 
@@ -389,7 +422,7 @@ if st.session_state.show_add_form:
             st.session_state.df = pd.concat(
                 [st.session_state.df, pd.DataFrame([new_row])], ignore_index=True
             )
-            st.session_state.df.to_excel(DB_FILE, index=False)
+            save_data(st.session_state.df)
             st.session_state.show_add_form = False
             st.rerun()
 
@@ -522,7 +555,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
                         st.rerun()
                     if bc3.button("🗑️", key=f"qdel_{current_tab}_{idx}", use_container_width=True):
                         st.session_state.df = st.session_state.df.drop(idx).reset_index(drop=True)
-                        st.session_state.df.to_excel(DB_FILE, index=False)
+                        save_data(st.session_state.df)
                         st.rerun()
 
             else:
@@ -574,7 +607,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
                     st.session_state.df.at[idx, "가을판매가"]  = n_fall
                     st.session_state.df.at[idx, "컴퓨존판매가"] = n_base
                     st.session_state.df.at[idx, "메모"]        = n_memo
-                    st.session_state.df.to_excel(DB_FILE, index=False)
+                    save_data(st.session_state.df)
                     st.session_state.editing_key = None
                     st.rerun()
 
@@ -582,7 +615,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
                     st.session_state.df = (
                         st.session_state.df.drop(idx).reset_index(drop=True)
                     )
-                    st.session_state.df.to_excel(DB_FILE, index=False)
+                    save_data(st.session_state.df)
                     st.session_state.editing_key = None
                     st.rerun()
 
@@ -639,7 +672,7 @@ def display_list(target_df: pd.DataFrame, current_tab: str):
             except Exception:
                 pass
 
-        st.session_state.df.to_excel(DB_FILE, index=False)
+        save_data(st.session_state.df)
 
         mode_note = "" if selenium_ok else " · Chrome 없음(requests 전용)"
         if updated:

@@ -4,3 +4,5 @@ openpyxl
 requests
 beautifulsoup4
 selenium
+gspread
+google-auth
